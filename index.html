@@ -2275,17 +2275,42 @@ img.is-broken{min-height:120px;background:var(--contour);color:var(--ink-dim);fo
     if (window.__GIS_PROJECTS__) return Promise.resolve(window.__GIS_PROJECTS__);
     return fetch('data/projects.json', { cache: 'no-cache' }).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
   }
-  var base = function (p) { return 'projects/' + encodeURIComponent(p.slug) + '/'; };
-  var full = function (p, im) { return base(p) + 'images/' + encodeURIComponent(im.file) + '?v=' + (im.v || 0); };
-  var thumb = function (p, im) { return im.thumb ? base(p) + 'thumbs/' + encodeURIComponent(im.thumb) + '?v=' + (im.v || 0) : full(p, im); };
+
+  /* ---------- image paths ----------
+     Images are looked up by their exact file names (from the data above).
+     The page probes these folders for a known file and uses the first match;
+     if any single image still fails, every folder is tried before giving up. */
+  var DIRS = ['', 'images/', 'img/', 'assets/', 'assets/images/', 'thumbs/', 'projects/'];
+  var dirFull = '', dirThumb = '';
+  var full = function (p, im) { return dirFull + encodeURIComponent(im.file) + '?v=' + (im.v || 0); };
+  var thumb = function (p, im) { return im.thumb ? dirThumb + encodeURIComponent(im.thumb) + '?v=' + (im.v || 0) : full(p, im); };
+  function probe(name) {
+    return new Promise(function (res) {
+      var i = 0;
+      (function next() {
+        if (i >= DIRS.length) return res('');
+        var d = DIRS[i++], t = new Image();
+        t.onload = function () { res(d); };
+        t.onerror = next;
+        t.src = d + name;
+      })();
+    });
+  }
   var cover = function (p) { return p.images.filter(function (i) { return i.id === p.cover; })[0] || p.images[0]; };
   function dms(v, pos, neg) { var a = Math.abs(v), d = Math.floor(a), m = Math.round((a - d) * 60); if (m === 60) { d++; m = 0; } return d + '°' + String(m).padStart(2, '0') + '′' + (v < 0 ? neg : pos); }
   var coord = function (c) { return c && c.lat != null && c.lng != null ? dms(c.lat, 'N', 'S') + ' ' + dms(c.lng, 'E', 'W') : ''; };
 
-  // a picture never silently disappears: thumbnail → original → labelled placeholder
+  // a picture never silently disappears: try every candidate folder, then show a labelled placeholder
   document.addEventListener('error', function (e) {
     var im = e.target; if (!im || im.tagName !== 'IMG' || !im.dataset.full) return;
-    if (im.src.indexOf(im.dataset.full) === -1) { im.src = im.dataset.full; return; }
+    if (!im._q) {
+      var nm = function (u) { return decodeURIComponent(u.split('?')[0].split('/').pop()); };
+      var names = [nm(im.getAttribute('src')), nm(im.dataset.full)];
+      var seen = {}, q = [];
+      names.forEach(function (n) { DIRS.forEach(function (d) { var u = d + encodeURIComponent(n); if (!seen[u]) { seen[u] = 1; q.push(u); } }); });
+      im._q = q; im._n = 0;
+    }
+    if (im._n < im._q.length) { im.src = im._q[im._n++]; return; }
     im.removeAttribute('srcset'); im.classList.add('is-broken'); im.alt = 'Image not found';
   }, true);
 
@@ -2551,7 +2576,10 @@ img.is-broken{min-height:120px;background:var(--contour);color:var(--ink-dim);fo
   };
 
   /* ---------- start ---------- */
-  loadData().then(function (db) {
+  Promise.all([probe('01-ndvi-dry-season.png'), probe('01-ndvi-dry-season.webp')]).then(function (r) {
+    dirFull = r[0]; dirThumb = r[1];
+    return loadData();
+  }).then(function (db) {
     projects = (db.projects || []).filter(function (p) { return p.images && p.images.length; }).sort(function (a, b) { return (a.order || 100) - (b.order || 100); });
     projects.forEach(function (p) { bySlug[p.slug] = p; });
     var figs = projects.reduce(function (n, p) { return n + p.images.length; }, 0);
